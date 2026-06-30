@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RISC-V AI 神经网络推理可视化</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI','Microsoft YaHei',sans-serif; background:#0d1117; color:#c9d1d9; display:flex; overflow:hidden; }
+#panel { width:460px; min-width:320px; max-width:70vw; padding:24px; background:#161b22; height:100vh; overflow-y:auto; }
+#divider { width:4px; background:#30363d; cursor:col-resize; height:100vh; flex-shrink:0; }
+#divider:hover,#divider:active { background:#58a6ff; }
+#canvas-wrap { flex:1; min-width:300px; height:100vh; display:flex; align-items:center; justify-content:center; background:#0d1117; }
+canvas { display:block; }
+h2 { color:#58a6ff; font-size:20px; margin-bottom:4px; }
+.sub { font-size:13px; color:#8b949e; margin-bottom:16px; }
+.step { background:#21262d; border:1px solid #30363d; padding:12px 14px; margin:10px 0; border-radius:8px; font-size:14px; line-height:1.7; }
+.step .title { color:#58a6ff; font-weight:bold; font-size:15px; }
+.val { color:#d2a8ff; font-weight:bold; }
+.mac { color:#7ee787; }
+.relu { color:#f97583; }
+button { display:block; width:100%; padding:12px; margin:8px 0; border:none; border-radius:8px;
+  font-size:15px; cursor:pointer; font-weight:bold; }
+.btn-all { background:#238636; color:#fff; }
+.btn-all:hover { background:#2ea043; }
+.btn-step { background:#21262d; color:#c9d1d9; border:1px solid #30363d; }
+.btn-step:hover { background:#30363d; }
+.btn-rst { background:#161b22; color:#8b949e; border:1px solid #21262d; }
+.btn-rst:hover { background:#21262d; }
+#status { color:#7ee787; margin:10px 0; font-size:14px; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h2>RISC-V AI 推理可视化</h2>
+  <div class="sub">2层全连接 &middot; MAC + RELU 硬件加速 &middot; 输入 [3,4]</div>
+
+  <button class="btn-all" onclick="runAll()">全部播放</button>
+  <button class="btn-step" onclick="step()">单步执行</button>
+  <button class="btn-rst" onclick="reset()">重置</button>
+
+  <div id="status"></div>
+  <div id="steps"></div>
+</div>
+
+<div id="divider"></div>
+<div id="canvas-wrap"><canvas id="cv"></canvas></div>
+
+<script>
+const steps = [
+  {t:'输入数据',         d:'i0 = <span class=val>3</span>, &nbsp; i1 = <span class=val>4</span>'},
+  {t:'y0 MAC #1',       d:'<span class=mac>mac</span> x3, x10, x12 &rarr; <span class=val>3</span> &times; <span class=val>2</span> = <span class=val>6</span>'},
+  {t:'y0 MAC #2',       d:'<span class=mac>mac</span> x3, x11, x13 &rarr; <span class=val>4</span> &times; <span class=val>1</span> = <span class=val>4</span>'},
+  {t:'y0 累加',         d:'acc = 6 + 4 + 0(bias) = <span class=val>10</span>'},
+  {t:'y0 ReLU',         d:'<span class=relu>relu</span> x3, x4 &rarr; max(<span class=val>10</span>, 0) = <span class=val>10</span> &check;'},
+  {t:'y1 MAC #1',       d:'<span class=mac>mac</span> x3, x10, x14 &rarr; <span class=val>3</span> &times; <span class=val>-1</span> = <span class=val>-3</span>'},
+  {t:'y1 MAC #2',       d:'<span class=mac>mac</span> x3, x11, x15 &rarr; <span class=val>4</span> &times; <span class=val>3</span> = <span class=val>12</span>'},
+  {t:'y1 累加',         d:'acc = -3 + 12 + 2(bias) = <span class=val>11</span>'},
+  {t:'y1 ReLU',         d:'<span class=relu>relu</span> x3, x4 &rarr; max(<span class=val>11</span>, 0) = <span class=val>11</span> &check;'},
+  {t:'完成!',           d:'输出 y0=<span class=val>10</span>, y1=<span class=val>11</span> &nbsp;|&nbsp; 每条 <span class=mac>MAC</span> 仅 1 周期'},
+];
+
+let idx = 0;
+function runAll() { reset(); for(let i=0;i<steps.length;i++) setTimeout(step, i*650); }
+function step(){
+  if(idx>=steps.length)return;
+  const s=steps[idx];
+  document.getElementById('steps').innerHTML +=
+    `<div class=step><div class=title>Step ${idx+1}: ${s.t}</div><div>${s.d}</div></div>`;
+  document.getElementById('status').innerHTML = `进度 ${idx+1}/${steps.length}`;
+  const h=[0,0]; if(idx>=4)h[0]=10; if(idx>=8)h[1]=11;
+  const o=[0,0]; if(idx>=4)o[0]=10; if(idx>=8)o[1]=11;
+  draw(idx, h, o);
+  idx++;
+  document.getElementById('panel').scrollTop=document.getElementById('panel').scrollHeight;
+}
+function reset(){
+  idx=0;
+  document.getElementById('steps').innerHTML='';
+  document.getElementById('status').innerHTML='';
+  draw(-1,[0,0],[0,0]);
+}
+
+// ===== Canvas =====
+const wrap=document.getElementById('canvas-wrap'), cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const W1=[[2,1],[-1,3]], bias=[0,2], input=[3,4];
+function sizeCanvas(){
+  const w=wrap.clientWidth, h=wrap.clientHeight;
+  const dpr=window.devicePixelRatio||1;
+  cv.width=w*dpr; cv.height=h*dpr;
+  cv.style.width=w+'px'; cv.style.height=h+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize',()=>{sizeCanvas();reset();});
+sizeCanvas();
+
+function draw(n,h,o){
+  const W=cv.width/(window.devicePixelRatio||1), H=cv.height/(window.devicePixelRatio||1);
+  ctx.clearRect(0,0,W,H);
+  // bg
+  ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
+
+  const R=24, gap=H/(2+1);
+  const cx=[W*0.18, W*0.45, W*0.72];
+  const ny=[2,2,2];
+  const names=[['i0=3','i1=4'],['h0','h1'],['y0','y1']];
+  const vals=[[3,4], h, o];
+
+  // weights
+  for(let li=0;li<2;li++){
+    const wm=li===0?W1:[[1,0],[0,1]];
+    for(let si=0;si<ny[li];si++){
+      for(let di=0;di<ny[li+1];di++){
+        const sy=gap*(si+1), dy=gap*(di+1);
+        const sx=cx[li]+R, dx=cx[li+1]-R;
+        const w=wm[di][si];
+        const active=n>=(li*4+di*2+si+1);
+        ctx.strokeStyle=active?(w>0?'#7ee787':'#f97583'):'#21262d';
+        ctx.lineWidth=active?2.5:1.2;
+        ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(dx,dy); ctx.stroke();
+        if(active && w!==0){
+          const mx=(sx+dx)/2, my=(sy+dy)/2-6;
+          ctx.fillStyle=w>0?'#7ee787':'#f97583';
+          ctx.font='bold 13px monospace'; ctx.textAlign='center';
+          ctx.fillText(w>0?'+'+w:w, mx, my);
+        }
+      }
+    }
+  }
+
+  // neurons
+  for(let li=0;li<3;li++){
+    const label=['INPUT','HIDDEN (ReLU)','OUTPUT'][li];
+    ctx.font='bold 14px sans-serif'; ctx.textAlign='center';
+    ctx.fillStyle='#8b949e'; ctx.fillText(label, cx[li], 32);
+    for(let ni=0;ni<ny[li];ni++){
+      const x=cx[li], y=gap*(ni+1);
+      const active=(li===0)||(li===1&&n>=4)||(li===2&&n>=4);
+      ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2);
+      ctx.fillStyle='#161b22'; ctx.fill();
+      ctx.strokeStyle=active?(li===2?'#f97583':'#58a6ff'):'#30363d';
+      ctx.lineWidth=2.5; ctx.stroke();
+
+      ctx.fillStyle='#fff'; ctx.font='bold 13px monospace';
+      ctx.fillText(names[li][ni], x, y-4);
+      if((li===0&&n>=0)||(li===1&&n>=4)||(li===2&&n>=4)){
+        const v=vals[li][ni];
+        ctx.fillStyle='#d2a8ff'; ctx.font='bold 14px monospace';
+        ctx.fillText(v, x, y+20);
+      }
+    }
+  }
+
+  // legend
+  ctx.fillStyle='#30363d'; ctx.font='13px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('绿线 +w  红线 -w', 16, H-12);
+}
+
+// ===== resize =====
+const panel=document.getElementById('panel'), div=document.getElementById('divider');
+let drag=false;
+div.onmousedown=e=>{drag=true;e.preventDefault();};
+document.onmousemove=e=>{
+  if(!drag)return;
+  let w=e.clientX;
+  if(w<320)w=320; if(w>window.innerWidth*.7)w=window.innerWidth*.7;
+  panel.style.width=w+'px';
+};
+document.onmouseup=()=>{if(drag){drag=false;sizeCanvas();reset();}};
+</script>
+</body>
+</html>
